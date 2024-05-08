@@ -1,0 +1,377 @@
+############################1.scrna-Allcell
+library(Seurat)
+library(dplyr)
+library(stringr)
+
+scRNA.data <- Read10X(data.dir = "10X.Data")
+
+scRNA <- CreateSeuratObject(counts = scRNA.data,
+                            min.cells = 3, 
+                            min.features = 200,                             project ="seurat", names.delim = "_")
+
+HB.ref <- c("HBA1","HBA2","HBB","HBD","HBE1","HBG1","HBG2","HBM","HBQ1","HBZ")
+rowSums(scRNA.data[HB.ref,])
+HB.genes <- intersect(HB.ref, rownames(scRNA))
+scRNA[["percent.HB"]] <- PercentageFeatureSet(scRNA, features = HB.genes)
+scRNA[["percent.MT"]] <- PercentageFeatureSet(scRNA, pattern = "^MT-")
+scRNA[["percent.Ribosome"]] <- PercentageFeatureSet(scRNA, pattern = "^RP[SL]")
+
+scRNA <- subset(scRNA, 
+                subset = nFeature_RNA > 500 & 
+               percent.MT < 5 		
+		)
+
+library(harmony)
+scRNA_harmony <- scRNA
+scRNA_harmony <- NormalizeData(scRNA_harmony) %>% FindVariableFeatures() %>% ScaleData() %>% RunPCA(verbose=FALSE)
+system.time({scRNA_harmony <- RunHarmony(scRNA_harmony, group.by.vars = "Sample")})
+scRNA_harmony <- FindNeighbors(scRNA_harmony, reduction = "harmony", dims = 1:20) %>% FindClusters(resolution = 0.5)
+scRNA_harmony <- RunUMAP(scRNA_harmony, reduction = "harmony", dims = 1:20)
+scRNA_harmony <- RunTSNE(scRNA_harmony, reduction = "harmony", dims = 1:20)
+sample.markers <- FindAllMarkers(scRNA_harmony, only.pos = TRUE, min.pct = 0.25, logfc.threshold = 0.25)
+
+
+library(SingleR)
+x=HumanPrimaryCellAtlasData()
+load("ref_Human_all.RData")
+testdata <- GetAssayData(scRNA_harmony, slot="data")
+clusters <- scRNA_harmony@meta.data$seurat_clusters
+cellpred <- SingleR(test = testdata, ref = refdata, labels = refdata$label.main, 
+                    method = "cluster", clusters = clusters, 
+                    assay.type.test = "logcounts", assay.type.ref = "logcounts")
+celltype = data.frame(ClusterID=rownames(cellpred), celltype=cellpred$labels, stringsAsFactors = FALSE)
+
+
+Idents(scRNA_harmony)= "celltype"
+CellType.markers <- FindAllMarkers(scRNA_harmony, only.pos = TRUE, min.pct = 0.25, logfc.threshold = 0.25)
+
+
+############################2.Fibroblasts
+Idents(scRNA_harmony)="celltype"
+Fibroblasts <- subset(scRNA_harmony, idents = "Fibroblasts")
+Fibroblasts <- FindNeighbors(Fibroblasts, reduction = "harmony", dims = 1:50) %>% FindClusters(resolution = 0.3)
+Fibroblasts <- RunUMAP(Fibroblasts, reduction = "harmony", dims = 1:20)
+Fibroblasts <- RunTSNE(Fibroblasts, reduction = "harmony", dims = 1:20)
+Fib.markers <- FindAllMarkers(Fibroblasts, only.pos = TRUE, min.pct = 0.25, logfc.threshold = 0.25)
+
+library(pheatmap)
+library(Seurat)
+library(msigdbr)
+library(GSVA)
+library(tidyverse)
+library(clusterProfiler)
+library(patchwork)
+library(fgsea)
+library(dplyr)
+library(ggplot2)
+Idents(Fibroblasts)="celltype"
+expr.group <- AverageExpression(Fibroblasts, assays = "RNA", slot = "data")[[1]]
+expr.group <- expr.group[rowSums(expr.group)>0,] 
+expr.group <- as.matrix(expr.group)
+gmtfile ='h.all.v7.4.symbols.gmt'
+pathway<-read.gmt(gmtfile)[,c(2,1)]
+genesets=unstack(pathway)
+gsva.group <- gsva(expr.group, genesets, method="ssgsea") 
+gsva.df.group <- data.frame(Genesets=rownames(gsva.group), gsva.group, check.names = F)
+library(pheatmap)
+pheatmap(gsva.group, show_colnames = T, scale = "row")
+
+library(Seurat)
+library(dplyr)
+library(org.Hs.eg.db)
+library(clusterProfiler)
+library(ggplot2)
+library(DOSE)
+
+sample.markers <- FindAllMarkers(Fibroblasts, only.pos = TRUE, min.pct = 0.25, logfc.threshold = 0.25)
+top200 <- sample.markers %>% group_by(cluster) %>% top_n(n = 200, wt = avg_log2FC) 
+top200_gene<-unstack(top200,gene~cluster)
+names(top200_gene)=new.cluster.ids
+top200_entrez <- lapply(X = top200_gene, FUN = function(x) {
+  x <- bitr(x, fromType="SYMBOL", toType="ENTREZID", OrgDb="org.Hs.eg.db")
+  x <- x[,-1]
+})
+all_cc <- compareCluster(top200_entrez, 
+                         fun='enrichGO',
+                         ont= 'CC',
+                         OrgDb='org.Hs.eg.db')
+
+all_mf <- compareCluster(top200_entrez, 
+                         fun='enrichGO',
+                         ont= 'MF',
+                         OrgDb='org.Hs.eg.db')
+
+all_bp <- compareCluster(top200_entrez, 
+                         fun='enrichGO',
+                         ont= 'BP',
+                         OrgDb='org.Hs.eg.db')
+
+all_kegg <- compareCluster(top200_entrez,
+                           fun='enrichKEGG',
+                           #pvalueCutoff=0.05, 
+                           organism="hsa"
+)
+
+
+############################3.CellChat
+library(CellChat)
+library(tidyverse)
+library(Seurat)
+options(stringsAsFactors = FALSE)
+
+cellchat <- createCellChat(object = cllchat.data,
+                           meta = cllchat.data@meta.data,
+                           group.by = "celltype")
+CellChatDB <- CellChatDB.human  
+showDatabaseCategory(CellChatDB)
+CellChatDB.use <- CellChatDB
+cellchat@DB <- CellChatDB.use
+cellchat <- subsetData(cellchat) 
+cellchat <- identifyOverExpressedGenes(cellchat)
+cellchat <- identifyOverExpressedInteractions(cellchat)
+cellchat <- projectData(cellchat, PPI.human)
+cellchat <- computeCommunProb(cellchat, raw.use = TRUE, population.size = TRUE) 
+cellchat <- filterCommunication(cellchat, min.cells = 10)
+cellchat <- computeCommunProbPathway(cellchat)
+cellchat <- aggregateNet(cellchat)
+
+############################4.monocle
+library(Seurat)
+library(monocle)
+library(dplyr)
+library(RColorBrewer)
+exp.matrix <- pseudotime.data@assays$RNA@counts %>% as.matrix() 
+gene.df <- data.frame(gene_short_name=rownames(exp.matrix))
+rownames(gene.df) <- gene.df$gene_short_name
+meta.df <- pseudotime.data@meta.data
+pd <- new("AnnotatedDataFrame", data = meta.df)
+fd <- new("AnnotatedDataFrame", data = gene.df)                           
+ cds.object <- newCellDataSet(as(as.matrix(exp.matrix),"sparseMatrix"), 
+      phenoData = pd, 
+      featureData = fd,
+      lowerDetectionLimit = 0.5,
+      expressionFamily = negbinomial.size())
+DelayedArray:::set_verbose_block_processing(TRUE)
+cds.object <- estimateSizeFactors(cds.object)
+cds.object <- estimateDispersions(cds.object)
+cds.object <- detectGenes(cds.object, min_expr = 0.5)
+select_gene <- subset(fData(cds.object),num_cells_expressed>=ceiling(nrow(pData(cds.object))*0.01))$gene_short_name %>% as.vector()
+cds.object <- cds.object[select_gene,]
+ express_genes <- VariableFeatures(pseudotime.data)
+ cds.object <- setOrderingFilter(cds.object, express_genes)
+cds.object <- reduceDimension(cds.object, 
+                              max_components = 2,
+                              method = "DDRTree")
+cds.object <- orderCells(cds.object)
+
+diff_test_res <- differentialGeneTest(cds.object,
+                                      fullModelFormulaStr = "~sm.ns(Pseudotime)")
+sig_gene_names <- row.names(subset(diff_test_res, qval < 0.05))
+write.csv(sig_gene_names, "12.pseudotime-DiffGene.csv", row.names = F)
+pht <- plot_pseudotime_heatmap(cds.object[sig_gene_names,],
+                        num_clusters = 9,
+                        return_heatmap=T)
+
+############################5.ST
+library(Seurat)
+library(ggplot2)
+library(patchwork)
+library(dplyr)
+library(hdf5r)
+brain<-Load10X_Spatial("./ST.data")
+##brain[["percent.mt"]] <- PercentageFeatureSet(brain, pattern = "^mt[-]")
+## VlnPlot(brain, features = "percent.mt", pt.size = 0.1) + NoLegend()
+##SpatialFeaturePlot(brain, features = "percent.mt") + theme(legend.position = "right")
+brain <- subset(brain, subset = nFeature_Spatial > 200 & nFeature_Spatial <7500 & nCount_Spatial > 1000 & nCount_Spatial < 60000 & percent.mt < 25)
+brain <- SCTransform(brain, assay = "Spatial", verbose = FALSE)
+brain <- RunPCA(brain, assay = "SCT", verbose = FALSE)
+##ISpatialDimPlot(brain)
+##ISpatialFeaturePlot(brain,feature = "Ttr")
+##LinkedDimPlot(brain)
+de_markers <- FindMarkers(brain, ident.1 = 5, ident.2 = 6)
+SpatialFeaturePlot(object = brain, features = rownames(de_markers)[1:3], alpha = c(0.1, 1), ncol = 3)
+
+############################5.Consensus clustering
+library(limma)
+library(survival)
+library(ConsensusClusterPlus)
+maxK=9
+data=t(data[,sigGenes])
+results=ConsensusClusterPlus(data,
+              maxK=maxK,
+              reps=50,
+              pItem=0.8,
+              pFeature=1,
+              title=workDir,
+              clusterAlg="pam",
+              distance="euclidean",
+              seed=123456,
+              plot="png")
+clusterNum=XX       
+Cluster=results[[clusterNum]][["consensusClass"]]
+Cluster=as.data.frame(Cluster)
+Cluster[,1]=paste0("C", Cluster[,1])
+ClusterOut=rbind(ID=colnames(Cluster), Cluster)
+
+
+############################6.ML
+library(openxlsx)
+library(seqinr)
+library(plyr)
+library(survival)
+library(randomForestSRC)
+library(glmnet)
+library(plsRcox)
+library(superpc)
+library(gbm)
+library(mixOmics)
+library(survcomp)
+library(CoxBoost)
+library(survivalsvm)
+library(BART)
+library(snowfall)
+library(ComplexHeatmap)
+library(RColorBrewer)
+
+code.path <- file.path(work.path, "Codes")
+data.path <- file.path(work.path, "InputData")
+res.path <- file.path(work.path, "Results")
+fig.path <- file.path(work.path, "Figures")
+source(file.path(code.path, "ML.R"))
+Train_expr <- read.table(file.path(data.path, "Training_expr.txt"), header = T, sep = "\t", row.names = 1,check.names = F,stringsAsFactors = F)
+Train_expr <- Train_expr[rowSums(Train_expr > 0) > ncol(Train_expr) * 0.1, ]
+Train_surv <- read.table(file.path(data.path, "Training_surv.txt"), header = T, sep = "\t", row.names = 1,check.names = F,stringsAsFactors = F)
+Train_surv <- Train_surv[Train_surv$OS.time > 0, c("OS", "OS.time")] 
+comsam <- intersect(rownames(Train_surv), colnames(Train_expr))
+Train_expr <- Train_expr[,comsam]; Train_surv <- Train_surv[comsam,,drop = F]
+Test_expr <- read.table(file.path(data.path, "Testing_expr.txt"), header = T, sep = "\t", row.names = 1,check.names = F,stringsAsFactors = F)
+Test_surv <- read.table(file.path(data.path, "Testing_surv.txt"), header = T, sep = "\t", row.names = 1,check.names = F,stringsAsFactors = F)
+Test_surv <- Test_surv[Test_surv$OS.time > 0, c("Coho","OS", "OS.time")] 
+comsam <- intersect(rownames(Test_surv), colnames(Test_expr))
+Test_expr <- Test_expr[,comsam]; Test_surv <- Test_surv[comsam,,drop = F]
+comgene <- intersect(rownames(Train_expr),rownames(GSE39582.share))   
+Train_expr <- t(Train_expr[comgene,])
+Test_expr <- t(Test_expr[comgene,]) 
+methods <- read.xlsx(file.path(code.path, "41467_2022_28421_MOESM4_ESM.xlsx"), startRow = 2)
+methods <- methods$Model
+methods <- gsub("-| ", "", methods)
+head(methods)
+## Train the model --------------------------------------------------------
+model <- list()
+set.seed(seed = 123)
+for (method in methods){
+  cat(match(method, methods), ":", method, "\n")
+  method_name = method # 本轮算法名称
+  method <- strsplit(method, "\\+")[[1]]   
+  Variable = colnames(Train_expr) 
+  for (i in 1:length(method)){
+    if (i < length(method)){
+      selected.var <- RunML(method = method[i], 
+                            Train_expr = Train_expr, 
+                            Train_surv = Train_surv, 
+                            mode = "Variable",       
+                            timeVar = "OS.time", statusVar = "OS") 
+      if (length(selected.var) > 5) Variable <- intersect(Variable, selected.var)
+    } else {
+      model[[method_name]] <- RunML(method = method[i],
+                                    Train_expr = Train_expr[, Variable],
+                                    Train_surv = Train_surv,
+                                    mode = "Model",
+                                    timeVar = "OS.time", statusVar = "OS")
+    }
+  }
+}
+saveRDS(model, file.path(res.path, "model.rds"))
+
+model <- readRDS(file.path(res.path, "model.rds"))
+summary(Train_expr)
+summary(Test_expr)
+Train_expr <- scale(Train_expr)
+Test_expr <- scale(Test_expr)
+Cindexlist1 <- list()
+for (method in methods){
+  Cindexlist1[[method]] <- RunEval(fit = model[[method]], 
+                                  Test_expr = Test_expr,                                   Test_surv = Test_surv,                                   Train_expr = Train_expr,                                   Train_surv = Train_surv,                                  Train_name = "TCGA",                                   cohortVar = "Coho",                                  timeVar = "OS.time",                                  statusVar = "OS") }
+Cindex_mat1 <- do.call(rbind, Cindexlist1)
+write.table(Cindex_mat1, file.path(res.path, "Cindex_mat1.txt"),
+            sep = "\t", row.names = T, col.names = T, quote = F)
+
+
+############################7.Signature comparion
+code.path <- file.path(work.path, "Codes") 
+data.path <- file.path(work.path, "InputData") 
+res.path <- file.path(work.path, "Results") 
+fig.path <- file.path(work.path, "Figures") 
+library(org.Hs.eg.db)
+library(survival)
+library(ggplot2)
+library(cowplot)
+library(RColorBrewer)
+library(openxlsx)
+library(pROC)
+source(file.path(code.path, "compare.R"))
+pubSIG <- read.table(file.path(data.path, "public signatures.txt"), header = T)
+if (!"Coef" %in% colnames(pubSIG)) pubSIG$Coef <- NA 
+pubSIG <- split(pubSIG[, c("SYMBOL", "Coef")], pubSIG$Model)
+mySIGname = "PredML" 
+myAlgorithm = "StepCox[backward]+Ridge" 
+mySIG <- read.table(file.path(res.path, "fea_df.txt"), header = T) 
+mySIG <- mySIG$features[mySIG$algorithm == myAlgorithm] # 
+mySIG <- data.frame("SYMBOL" = mySIG)
+signatures <- pubSIG
+signatures[[mySIGname]] <- mySIG
+Train_expr <- read.table(file.path(data.path, "Training_expr.txt"), header = T, sep = "\t", row.names = 1,check.names = F,stringsAsFactors = F)
+Train_class <- read.table(file.path(data.path, "Training_class.txt"), header = T, sep = "\t", row.names = 1,check.names = F,stringsAsFactors = F)
+comsam <- intersect(rownames(Train_class), colnames(Train_expr))
+Train_expr <- Train_expr[,comsam]; Train_class <- Train_class[comsam,,drop = F]
+Test_expr <- read.table(file.path(data.path, "Testing_expr.txt"), header = T, sep = "\t", row.names = 1,check.names = F,stringsAsFactors = F)
+Test_class <- read.table(file.path(data.path, "Testing_class.txt"), header = T, sep = "\t", row.names = 1,check.names = F,stringsAsFactors = F)
+comsam <- intersect(rownames(Test_class), colnames(Test_expr))
+Test_expr <- Test_expr[,comsam]; Test_class <- Test_class[comsam,,drop = F]
+comgene <- intersect(rownames(Train_expr),rownames(Test_expr))
+Train_expr <- t(Train_expr[comgene,]) 
+Test_expr <- t(Test_expr[comgene,])
+Train_set = scaleData(data = Train_expr, centerFlags = T, scaleFlags = T) 
+names(x = split(as.data.frame(Test_expr), f = Test_class$Cohort)) 
+Test_set = scaleData(data = Test_expr, cohort = Test_class$Cohort, centerFlags = T, scaleFlags = T)
+model <- list(); ainfo <- list() 
+log.file <- file.path(res.path, "makelogist.log") 
+if (file.exists(log.file)) file.remove(log.file) 
+log.file <- file(log.file, open = "a")
+sink(log.file, append = TRUE, type = "message")
+for (i in names(signatures)){
+  if (class(signatures[[i]]) == "data.frame"){
+    model[[i]] <- makeLogist(Features = signatures[[i]]$SYMBOL, # 签名的基因名
+                             coefs = signatures[[i]]$Coef,      
+                             SIGname = i,                      
+                             unmatchR = 0.9,                    
+                             Train_expr = Train_set,           
+                             Train_label = Train_class,         
+                             classVar = "outcome")              
+  }else{
+    model[[i]] = signatures[[i]]
+  }
+  
+  ainfo[[i]] <- calAUC(model = model[[i]],                
+                          name = i,                          
+                          Test_expr = Test_set,              
+                          Test_label = Test_class,           
+                          Train_expr = Train_set,            
+                          Train_label = Train_class,         
+                          Train_name = "TCGA",               
+                          # Train_expr = NULL,               
+                          # Train_label = NULL,              
+                          CohortVar = "Cohort",              
+                          classVar = "outcome")              
+  message("")
+}
+closeAllConnections()
+
+ainfo <- do.call(rbind, ainfo)
+ainfo <- split(ainfo, ainfo$Cohort)
+
+
+
+
+
+
