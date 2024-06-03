@@ -1,0 +1,83 @@
+###CellchatAnalyse --Fig2.A-C
+library(CellChat)
+library(tidyverse)
+library(Seurat)
+cellchat <- createCellChat(object = cllchat.data,
+                           meta = cllchat.data@meta.data,
+                           group.by = "celltype")
+CellChatDB <- CellChatDB.human  
+showDatabaseCategory(CellChatDB)
+CellChatDB.use <- CellChatDB
+cellchat@DB <- CellChatDB.use
+cellchat <- subsetData(cellchat) 
+cellchat <- identifyOverExpressedGenes(cellchat)
+cellchat <- identifyOverExpressedInteractions(cellchat)
+cellchat <- projectData(cellchat, PPI.human)
+cellchat <- computeCommunProb(cellchat, raw.use = TRUE, population.size = TRUE) 
+cellchat <- filterCommunication(cellchat, min.cells = 10)
+cellchat <- computeCommunProbPathway(cellchat)
+cellchat <- aggregateNet(cellchat)
+groupSize <- as.numeric(table(cellchat@idents))
+par(mfrow = c(1,2), xpd=TRUE)
+netVisual_circle(cellchat@net$count, vertex.weight = groupSize, 
+                 weight.scale = T, label.edge= F, title.name = "Number of interactions")
+netVisual_circle(cellchat@net$weight, vertex.weight = groupSize, 
+                 weight.scale = T, label.edge= F, title.name = "Interaction weights/strength")
+par(mfrow = c(2,3), xpd=TRUE)
+for (i in 1:nrow(mat)) {
+  mat2 <- matrix(0, nrow = nrow(mat), ncol = ncol(mat), dimnames = dimnames(mat))
+  mat2[i, ] <- mat[i, ]
+  netVisual_circle(mat2, vertex.weight = groupSize, weight.scale = T, edge.weight.max = max(mat), title.name = rownames(mat)[i])
+}
+cellchat@netP$pathways
+pathways.show <- c("APP")  
+levels(cellchat@idents)   
+netVisual_aggregate(cellchat, signaling = pathways.show,  
+                    vertex.receiver = vertex.receiver,layout = "hierarchy")
+netVisual_aggregate(cellchat, signaling = pathways.show,layout = "circle")
+netVisual_bubble(cellchat, sources.use = c(6), 
+                     targets.use = c(7), remove.isolate = FALSE)
+plotGeneExpression(cellchat, signaling = c("APP","MIF","COLLAGEN"))
+
+
+###Fig2.D
+library(pheatmap)
+library(Seurat)
+library(msigdbr)
+library(GSVA)
+library(tidyverse)
+library(clusterProfiler)
+library(patchwork)
+library(fgsea)
+library(dplyr)
+library(ggplot2)
+Idents(scRNA_harmony)="celltype"
+expr.group <- AverageExpression(scRNA_harmony, assays = "RNA", slot = "data")[[1]]
+expr.group <- expr.group[rowSums(expr.group)>0,] 
+expr.group <- as.matrix(expr.group)
+gmtfile ='h.all.v7.4.symbols.gmt'
+pathway<-read.gmt(gmtfile)[,c(2,1)]
+genesets=unstack(pathway)
+gsva.group <- gsva(expr.group, genesets, method="ssgsea") 
+gsva.df.group <- data.frame(Genesets=rownames(gsva.group), gsva.group, check.names = F)
+library(pheatmap)
+pheatmap(gsva.group, show_colnames = T, scale = "row")
+
+###Fig2.E-F
+library(SCP)
+pancreas_sub <- RunDEtest(srt = scRNA_harmony, group_by = "CellType", fc.threshold = 1, only.pos = FALSE)
+VolcanoPlot(srt = pancreas_sub, group_by = "CellType")
+DEGs <- scRNA_harmony@tools$DEtest_CellType$AllMarkers_wilcox
+DEGs <- DEGs[with(DEGs, avg_log2FC > 1 & p_val_adj < 0.05), ]
+pancreas_sub <- RunEnrichment(
+  srt = scRNA_harmony, group_by = "CellType", db = c("GO_BP", "GO_CC","GO_MF","KEGG"),
+  DE_threshold = "avg_log2FC > 1 & p_val_adj < 0.05"
+)
+EnrichmentPlot(
+  srt =  scRNA_harmony, group_by = "CellType",
+  plot_type = "comparison"
+)
+
+
+
+
