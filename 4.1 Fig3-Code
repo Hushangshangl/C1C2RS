@@ -126,38 +126,29 @@ ssgseaOut=rbind(id=colnames(ssgseaOut),ssgseaOut)
 library(monocle)
 library(dplyr)
 library(RColorBrewer)
-exp.matrix <- Fibroblasts@assays$RNA@counts %>% as.matrix() 
-gene.df <- data.frame(gene_short_name=rownames(exp.matrix))
-rownames(gene.df) <- gene.df$gene_short_name
-meta.df <- pseudotime.data@meta.data
-pd <- new("AnnotatedDataFrame", data = meta.df)
-fd <- new("AnnotatedDataFrame", data = gene.df)                           
- cds.object <- newCellDataSet(as(as.matrix(exp.matrix),"sparseMatrix"), 
-      phenoData = pd, 
-      featureData = fd,
-      lowerDetectionLimit = 0.5,
-      expressionFamily = negbinomial.size())
-DelayedArray:::set_verbose_block_processing(TRUE)
-cds.object <- estimateSizeFactors(cds.object)
-cds.object <- estimateDispersions(cds.object)
-cds.object <- detectGenes(cds.object, min_expr = 0.5)
-select_gene <- subset(fData(cds.object),num_cells_expressed>=ceiling(nrow(pData(cds.object))*0.01))$gene_short_name %>% as.vector()
-cds.object <- cds.object[select_gene,]
- express_genes <- VariableFeatures(pseudotime.data)
- cds.object <- setOrderingFilter(cds.object, express_genes)
-cds.object <- reduceDimension(cds.object, 
-                              max_components = 2,
-                              method = "DDRTree")
-cds.object <- orderCells(cds.object)
- plot_cell_trajectory(cds.object, color_by = "Pseudotime",cell_size = 0.3)+
-  theme(legend.position = "right")
- p + scale_color_gradientn(colours = rev(c("#EE82EE", "#87CEFA", "grey80")))
-plot_cell_trajectory(cds.object, color_by = "Group",cell_size = 0.3) +
-  theme(legend.position = "right")
-plot_cell_trajectory(cds.object, color_by = "State",cell_size = 0.3)+
-  theme(legend.position = "right")
-plot_cell_trajectory(cds.object, color_by = 'celltype')+ facet_wrap(~celltype, nrow = 3) + NoLegend()
-celltype.col <- colorRampPalette(colors = brewer.pal(9, "Set1"))(9)
- plot_cell_trajectory(cds.object, color_by = "celltype",cell_size = 0.3 ) + 
-  scale_color_manual(values = celltype.col)+
-  theme(legend.position = "right")
+pseudotime.data<-Fibroblasts
+pseudotime.data$group <- Idents(pseudotime.data)
+data <- pseudotime.data[['RNA']]@data
+pd <- new('AnnotatedDataFrame', data = pseudotime.data@meta.data)
+fData <- data.frame(gene_short_name = row.names(data), row.names = row.names(data))
+fd <- new('AnnotatedDataFrame', data = fData)
+HSMM <- newCellDataSet(data,
+                       phenoData = pd,
+                       featureData = fd
+                       )
+ordering_genes <- pseudotime.data[["RNA"]]@var.features
+HSMM <- setOrderingFilter(HSMM, ordering_genes)
+HSMM <- estimateSizeFactors(HSMM)
+HSMM <- reduceDimension(HSMM,
+                        norm_method="none", 
+                        reduction_method="DDRTree",
+                        max_components=3,
+                        scaling=TRUE,
+                        verbose=TRUE,
+                        pseudo_expr=0)
+HSMM <- orderCells(HSMM)
+plot_cell_trajectory(HSMM)
+plot_cell_trajectory(HSMM,color_by = "Pseudotime")
+plot_cell_trajectory(HSMM, color_by = 'group') 
+plot_cell_trajectory(HSMM, color_by = 'celltype')+ facet_wrap(~celltype, nrow = 3) + NoLegend()
+
