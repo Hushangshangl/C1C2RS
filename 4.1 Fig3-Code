@@ -1,0 +1,124 @@
+####Fibroblast extraction and processing
+Idents(scRNA_harmony)="celltype"
+Fibroblasts <- subset(scRNA_harmony, idents = "Fibroblasts")
+library(Seurat)
+library(dplyr)
+library(stringr)
+Fibroblasts <- FindNeighbors(Fibroblasts, reduction = "harmony", dims = 1:20) %>% FindClusters(resolution = 0.3)
+Fibroblasts <- RunUMAP(Fibroblasts, reduction = "harmony", dims = 1:20)
+Fibroblasts <- RunTSNE(Fibroblasts, reduction = "harmony", dims = 1:20)
+Idents(Fibroblasts) <- "seurat_clusters"
+new.cluster.ids <- c("Fib_1","Fib_2", "Fib_3","Fib_4")
+names(new.cluster.ids) <- levels(Fibroblasts)
+Fibroblasts <- RenameIdents(Fibroblasts, new.cluster.ids)
+Fibroblasts@meta.data$celltype=Fibroblasts@active.ident
+Fib.markers <- FindAllMarkers(Fibroblasts, only.pos = TRUE, min.pct = 0.25, logfc.threshold = 0.25)
+
+####Fig3.A-C
+library(SCP)
+CellDimPlot(
+  srt = Fibroblasts, group.by = c("celltype", "Group"),
+  reduction = "UMAP", theme_use = "theme_blank"
+)
+Fib.top10 <- Fib.markers %>% group_by(cluster) %>% top_n(n = 10, wt = avg_log2FC)
+Fib.top10_table=unstack(Fib.top10, gene ~ cluster)
+names(Fib.top10_table)=gsub("X","cluster",names(Fib.top10_table))
+Fibtop_markers <- Fib.top10 %>% group_by(cluster) %>% top_n(n = 3, wt = avg_log2FC) 
+library(scRNAtoolVis)
+AverageHeatmap(object = Fibroblasts,markerGene = Fibtop_markers$gene,htCol = c("#00BFFF", "white", "#EE82EE"))
+library(remotes)  
+library(MySeuratWrappers)  
+Idents(Fibroblasts) <- 'celltype'
+markers <- c('CALD1', 'COL1A2', 'IGFBP7')  
+my36colors <-c('#E5D2DD', '#53A85F', '#F1BB72', '#F3B1A0', '#D6E7A3', '#57C3F3', '#476D87', '#E95C59', '#E59CC4', '#AB3282', '#23452F', '#BD956A', '#8C549C', '#585658', '#9FA3A8', '#E0D4CA', '#5F3D69', '#C5DEBA', '#58A4C3', '#E4C755', '#F7F398', '#AA9A59', '#E63863', '#E39A35', '#C1E6F3', '#6778AE', '#91D0BE', '#B53E2B', '#712820', '#DCC1DD', '#CCE0F5',  '#CCC9E6', '#625D9E', '#68A180', '#3A6963', '#968175')#颜色设置  
+VlnPlot(Fibroblasts, features = markers,  
+        stacked=T,pt.size=0,  
+        cols = my36colors,  
+        direction = "horizontal", 
+        x.lab = '', y.lab = '')+
+  theme(axis.text.x = element_blank(),   
+      axis.ticks.x = element_blank())
+
+####Fig3.D
+Fibroblasts <- RunDEtest(srt = Fibroblasts, group_by = "celltype", fc.threshold = 1, only.pos = FALSE)
+VolcanoPlot(srt = Fibroblasts, group_by = "celltype")
+####Fig3.E
+library(dplyr)
+library(org.Hs.eg.db)
+library(clusterProfiler)
+library(ggplot2)
+library(DOSE)
+sample.markers <- FindAllMarkers(Fibroblasts, only.pos = TRUE, min.pct = 0.25, logfc.threshold = 0.25)
+top200 <- sample.markers %>% group_by(cluster) %>% top_n(n = 200, wt = avg_log2FC) 
+top200_gene<-unstack(top200,gene~cluster)
+names(top200_gene)=new.cluster.ids
+top200_entrez <- lapply(X = top200_gene, FUN = function(x) {
+  x <- bitr(x, fromType="SYMBOL", toType="ENTREZID", OrgDb="org.Hs.eg.db")
+  x <- x[,-1]
+})
+all_cc <- compareCluster(top200_entrez, 
+                         fun='enrichGO',
+                         ont= 'CC',
+                         OrgDb='org.Hs.eg.db')
+dotplot(all_cc, includeAll=FALSE)+ theme(axis.text.x = element_text(angle = 30, hjust = 1))
+all_mf <- compareCluster(top200_entrez, 
+                         fun='enrichGO',
+                         ont= 'MF',
+                         OrgDb='org.Hs.eg.db')
+dotplot(all_mf, includeAll=FALSE)+ theme(axis.text.x = element_text(angle = 30, hjust = 1))
+all_bp <- compareCluster(top200_entrez, 
+                         fun='enrichGO',
+                         ont= 'BP',
+                         OrgDb='org.Hs.eg.db')
+dotplot(all_bp, includeAll=FALSE)+ theme(axis.text.x = element_text(angle = 30, hjust = 1))
+all_kegg <- compareCluster(top200_entrez,
+                           fun='enrichKEGG',
+                           #pvalueCutoff=0.05, 
+                           organism="hsa"
+)
+dotplot(all_kegg, showCategory=5, includeAll=FALSE)+ theme(axis.text.x = element_text(angle = 30, hjust = 1))
+
+####Fig3.F
+library(pheatmap)
+library(Seurat)
+library(msigdbr)
+library(GSVA)
+library(tidyverse)
+library(clusterProfiler)
+library(patchwork)
+library(fgsea)
+library(dplyr)
+library(ggplot2)
+Idents(Fibroblasts)="celltype"
+expr.group <- AverageExpression(Fibroblasts, assays = "RNA", slot = "data")[[1]]
+expr.group <- expr.group[rowSums(expr.group)>0,] 
+expr.group <- as.matrix(expr.group)
+gmtfile ='h.all.v7.4.symbols.gmt'
+pathway<-read.gmt(gmtfile)[,c(2,1)]
+genesets=unstack(pathway)
+gsva.group <- gsva(expr.group, genesets, method="ssgsea") 
+gsva.df.group <- data.frame(Genesets=rownames(gsva.group), gsva.group, check.names = F)
+library(pheatmap)
+pheatmap(gsva.group, show_colnames = T, scale = "row")
+
+####Fig3.G
+library(GSVA)
+library(limma)
+library(GSEABase)
+expFile="GEO-TCGA-EXP.txt"      
+gmtFile="Fib-Marker.gmt"      
+rt=read.table(expFile, header=T, sep="\t", check.names=F)
+rt=as.matrix(rt)
+rownames(rt)=rt[,1]
+exp=rt[,2:ncol(rt)]
+dimnames=list(rownames(exp),colnames(exp))
+mat=matrix(as.numeric(as.matrix(exp)),nrow=nrow(exp),dimnames=dimnames)
+mat=avereps(mat)
+mat=mat[rowMeans(mat)>0,]
+geneSet=getGmt(gmtFile, geneIdType=SymbolIdentifier())
+ssgseaScore=gsva(mat, geneSet, method='ssgsea', kcdf='Gaussian', abs.ranking=TRUE)
+normalize=function(x){
+	return((x-min(x))/(max(x)-min(x)))}
+ssgseaOut=normalize(ssgseaScore)
+ssgseaOut=rbind(id=colnames(ssgseaOut),ssgseaOut)
+
