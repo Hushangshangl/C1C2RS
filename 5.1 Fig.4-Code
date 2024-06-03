@@ -1,0 +1,167 @@
+####Fig4.A
+pseudotime.data<-Fibroblasts
+pseudotime.data$group <- Idents(pseudotime.data)
+data <- pseudotime.data[['RNA']]@data
+pd <- new('AnnotatedDataFrame', data = pseudotime.data@meta.data)
+fData <- data.frame(gene_short_name = row.names(data), row.names = row.names(data))
+fd <- new('AnnotatedDataFrame', data = fData)
+HSMM <- newCellDataSet(data,
+                       phenoData = pd,
+                       featureData = fd
+                       )
+ordering_genes <- pseudotime.data[["RNA"]]@var.features
+HSMM <- setOrderingFilter(HSMM, ordering_genes)
+HSMM <- estimateSizeFactors(HSMM)
+HSMM <- reduceDimension(HSMM,
+                        norm_method="none", 
+                        reduction_method="DDRTree",
+                        max_components=3,
+                        scaling=TRUE,
+                        verbose=TRUE,
+                        pseudo_expr=0)
+HSMM <- orderCells(HSMM)
+plot_cell_trajectory(HSMM)
+plot_cell_trajectory(HSMM,color_by = "Pseudotime")
+plot_cell_trajectory(HSMM, color_by = 'group') 
+plot_cell_trajectory(HSMM, color_by = 'celltype')+ facet_wrap(~celltype, nrow = 3) + NoLegend()
+top5=pseudotime.data.markers %>% group_by(cluster) %>% top_n(n = 5, wt = avg_log2FC)
+sig_gene_names <- unique(top5$gene)
+pseudotemporalplot<- plot_pseudotime_heatmap(HSMM[sig_gene_names,],
+                                             num_clusters = 4,  #亚群数需要对应修改
+                                             cores = 4,
+                                             hmcols = NULL,
+                                             show_rownames = T,
+                                             return_heatmap = T)
+pseudotemporalplot
+groups=subset(pData(HSMM),select='State')
+pseudotime.data=AddMetaData(object=pseudotime.data, metadata=groups, col.name="group")
+geneList=list()
+for(i in levels(factor(groups$State))){
+	pseudotime.data.markers=FindMarkers(Fibroblasts, ident.1 = i, group.by = 'group')
+	sig.markers=pseudotime.data.markers[(abs(as.numeric(as.vector(pseudotime.data.markers$avg_log2FC)))>logFCfilter & as.numeric(as.vector(pseudotime.data.markers$p_val_adj))<adjPvalFilter),]
+	sig.markers=cbind(Gene=row.names(sig.markers), sig.markers)
+	write.table(sig.markers,file=paste0("05.monocleDiff.", i, ".txt"),sep="\t",row.names=F,quote=F)
+	geneList[[i]]=row.names(sig.markers)
+}
+unionGenes=Reduce(union,geneList)
+
+####Fig4.B-C
+library(limma)
+library(survival)
+library(ConsensusClusterPlus)
+expFile="Trajectory difference genes-exp.txt"    
+cliFile="TCGA-CRC-Time-OS.txt"                   
+data=read.table(expFile, header=T, sep="\t", check.names=F, row.names=1)
+group=sapply(strsplit(colnames(data),"\\-"), "[", 4)
+group=sapply(strsplit(group,""), "[", 1)
+group=gsub("2", "1", group)
+data=data[,group==0]
+data=t(data)
+rownames(data)=gsub("(.*?)\\-(.*?)\\-(.*?)\\-.*", "\\1\\-\\2\\-\\3", rownames(data))
+data=avereps(data)
+data=log2(data+1)
+cli=read.table(cliFile,sep="\t",check.names=F,header=T,row.names=1)  
+sameSample=intersect(row.names(data),row.names(cli))
+data=data[sameSample,]
+cli=cli[sameSample,]
+rt=cbind(cli,data)
+sigGenes=c()
+for(i in colnames(rt)[3:ncol(rt)]){
+	cox=coxph(Surv(futime, fustat) ~ rt[,i], data = rt)
+	coxSummary=summary(cox)
+	coxP=coxSummary$coefficients[,"Pr(>|z|)"]
+	if(coxP<0.05){ sigGenes=c(sigGenes,i) }
+}
+maxK=9
+data=t(data[,sigGenes])
+results=ConsensusClusterPlus(data,
+              maxK=maxK,
+              reps=50,
+              pItem=0.8,
+              pFeature=1,
+              title=workDir,
+              clusterAlg="pam",
+              distance="euclidean",
+              seed=123456,
+              plot="png")
+clusterNum=2
+Cluster=results[[clusterNum]][["consensusClass"]]
+Cluster=as.data.frame(Cluster)
+Cluster[,1]=paste0("C", Cluster[,1])
+ClusterOut=rbind(ID=colnames(Cluster), Cluster)
+
+####Fig4.D
+library(GSVA)
+library(limma)
+library(GSEABase)
+expFile="TCGA_CRC-TPM.txt"    
+gmtFile="h.all.v7.4.symbols.gmt"   
+rt=read.table(expFile, header=T, sep="\t", check.names=F)
+rt=as.matrix(rt)
+rownames(rt)=rt[,1]
+exp=rt[,2:ncol(rt)]
+dimnames=list(rownames(exp),colnames(exp))
+mat=matrix(as.numeric(as.matrix(exp)),nrow=nrow(exp),dimnames=dimnames)
+mat=avereps(mat)
+mat=mat[rowMeans(mat)>0,]
+geneSet=getGmt(gmtFile, geneIdType=SymbolIdentifier())
+ssgseaScore=gsva(mat, geneSet, method='ssgsea', kcdf='Gaussian', abs.ranking=TRUE)
+normalize=function(x){
+	return((x-min(x))/(max(x)-min(x)))}
+ssgseaOut=normalize(ssgseaScore)
+ssgseaOut=rbind(id=colnames(ssgseaOut),ssgseaOut)
+
+####Fig4.E
+library(limma)
+library(EPIC)
+library(xCell)
+library(MCPcounter)
+library(estimate)
+inputFile="TCGA_CRC-TPM.txt"     #表达数据文件
+rt=read.table(inputFile, header=T, sep="\t", check.names=F)
+rt=as.matrix(rt)
+rownames(rt)=rt[,1]
+exp=rt[,2:ncol(rt)]
+dimnames=list(rownames(exp),colnames(exp))
+data=matrix(as.numeric(as.matrix(exp)),nrow=nrow(exp),dimnames=dimnames)
+data=avereps(data)
+rt=data[rowMeans(data)>0,]
+rt=t(rt)
+row.names(rt)=gsub("(.*?)\\-(.*?)\\-(.*?)\\-.*", "\\1\\-\\2\\-\\3", row.names(rt))
+rt=avereps(rt)
+data=t(rt)
+out=rbind(ID=colnames(data), data)
+tide=log2(data+1)
+tideMean=rowMeans(tide)
+tide=tide-tideMean
+tideOut=rbind(ID=colnames(tide), tide)
+data=log2(data+1)
+epic=EPIC(bulk=data)
+CAF_EPIC=epic$cellFractions[,"CAFs"]
+outTab=rbind(ID=colnames(epic$cellFractions), epic$cellFractions)
+MCPcounter.estimate <- MCPcounter.estimate(data,
+	featuresType="HUGO_symbols",
+	probesets=read.table("MCPcounter.probesets.txt",sep="\t",stringsAsFactors=FALSE,colClasses="character"),
+	genes=read.table("MCPcounter.genes.txt",sep="\t",stringsAsFactors=FALSE,header=TRUE,colClasses="character",check.names=FALSE)
+)
+CAF_MCPcounter=MCPcounter.estimate["Fibroblasts",]
+outTab=rbind(ID=colnames(MCPcounter.estimate), MCPcounter.estimate)
+write.table(outTab, file="score.MCPcounter.txt", sep="\t", quote=F, col.names=F)
+xCell=xCellAnalysis(data, rnaseq=TRUE, file.name="score.xCell.txt", parallel.sz=1)
+CAF_xCell=xCell["Fibroblasts",]
+filterCommonGenes(input.f="TCGA.symbol.txt", 
+                  output.f="commonGenes.gct", 
+                  id="GeneSymbol")
+estimateScore(input.ds = "commonGenes.gct",
+              output.ds="estimateScore.gct")
+scores=read.table("estimateScore.gct", skip=2, header=T)
+rownames(scores)=scores[,1]
+scores=t(scores[,3:ncol(scores)])
+rownames(scores)=gsub("\\.", "\\-", rownames(scores))
+StromalScore=scores[,"StromalScore"]
+out=rbind(ID=colnames(scores), scores)
+caf=cbind(CAF_EPIC, CAF_MCPcounter, CAF_xCell, StromalScore)
+outTab=rbind(ID=colnames(caf), caf)
+
+
+
