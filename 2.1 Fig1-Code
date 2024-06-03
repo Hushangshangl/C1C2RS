@@ -1,0 +1,124 @@
+####Single cell data processing
+library(Seurat)
+library(dplyr)
+library(stringr)
+scRNA.data <- read.table("GSE200997_GEO_processed_CRC_10X_raw_UMI_count_matrix.txt",sep="\t",header = T,row.names = 1)
+scRNA <- CreateSeuratObject(counts = scRNA.data,
+                            min.cells = 3, 
+                            min.features = 200,  
+                            project ="seurat", names.delim = "_")
+HB.ref <- c("HBA1","HBA2","HBB","HBD","HBE1","HBG1","HBG2","HBM","HBQ1","HBZ")
+rowSums(scRNA.data[HB.ref,])
+HB.genes <- intersect(HB.ref, rownames(scRNA))
+scRNA[["percent.HB"]] <- PercentageFeatureSet(scRNA, features = HB.genes)
+scRNA[["percent.MT"]] <- PercentageFeatureSet(scRNA, pattern = "^MT-")
+scRNA[["percent.Ribosome"]] <- PercentageFeatureSet(scRNA, pattern = "^RP[SL]")
+scRNA <- subset(scRNA, 
+                subset = nFeature_RNA > 500 & 
+               percent.MT < 25 		
+		)
+
+Group_merge="Sample-input.txt"               
+Group_merge=read.table(Group_merge,sep="\t",header=T,check.names=F)
+Group_merge=data.frame(Group_merge)
+scRNA@meta.data$Sample=Group_merge$samples
+scRNA@meta.data$Group=Group_merge$Condition
+
+library(harmony)
+scRNA_harmony <- scRNA
+scRNA_harmony <- NormalizeData(scRNA_harmony) %>% FindVariableFeatures() %>% ScaleData() %>% RunPCA(verbose=FALSE)
+system.time({scRNA_harmony <- RunHarmony(scRNA_harmony, group.by.vars = "Sample")})
+scRNA_harmony <- FindNeighbors(scRNA_harmony, reduction = "harmony", dims = 1:20) %>% FindClusters(resolution = 0.5)
+scRNA_harmony <- RunUMAP(scRNA_harmony, reduction = "harmony", dims = 1:20)
+scRNA_harmony <- RunTSNE(scRNA_harmony, reduction = "harmony", dims = 1:20)
+
+library(SingleR)
+sample.markers <- FindAllMarkers(scRNA_harmony, only.pos = TRUE, min.pct = 0.25, logfc.threshold = 0.25)
+load("ref_Human_all.RData")
+refdata <- ref_Human_all
+testdata <- GetAssayData(scRNA_harmony, slot="data")
+clusters <- scRNA_harmony@meta.data$seurat_clusters
+cellpred <- SingleR(test = testdata, ref = refdata, labels = refdata$label.main, 
+                    method = "cluster", clusters = clusters, 
+                    assay.type.test = "logcounts", assay.type.ref = "logcounts")
+celltype = data.frame(ClusterID=rownames(cellpred), celltype=cellpred$labels, stringsAsFactors = FALSE)
+Idents(scRNA_harmony)= "seurat_clusters"
+new.cluster.ids <- c("T_cells", "T_cells", "B_cell", "Epithelial_cells", "T_cells",  "T_cells","Plasma_cells", "T_cells", "Epithelial_cells", "Macrophage", "Fibroblasts", "Plasma_cells", "Endothelial_cells", "T_cells")
+names(new.cluster.ids) <- levels(scRNA_harmony)
+scRNA_harmony <- RenameIdents(scRNA_harmony, new.cluster.ids)
+scRNA_harmony@meta.data$celltype=scRNA_harmony@active.ident
+Idents(scRNA_harmony)= "celltype"
+CellType.markers <- FindAllMarkers(scRNA_harmony, only.pos = TRUE, min.pct = 0.25, logfc.threshold = 0.25)
+
+####Fig1.A-C
+library(SCP)
+library(tidyverse)
+library(patchwork)
+library(viridis)
+library(Seurat)
+library(scCustomize)
+library(remotes)  
+library(MySeuratWrappers)  
+CellDimPlot(
+  srt = scRNA_harmony, group.by = c("celltype", "Group", "Sample"),
+  reduction = "tsne", theme_use = "theme_blank"
+)
+####Fig1.D-E
+FeaturePlot_scCustom(scRNA_harmony2, features = c('CD3D', 'CD68', 'COL1A2', 'KRT19',  'MS4A1', 'MZB1',' 'VWF'), order = F)
+markers <- c('CD3D', 'CD3E', 'CD7', 'MS4A1', 'VPREB3','CD79B', 'KRT19', 'KRT8', 'KRT18', 'MZB1','JCHAIN', 'IGHA1', 'CD68', 'LYZ', 'AIF1', 'COL1A1', 'COL1A2', 'COL3A1', 'VWF', 'PLVAP', 'RAMP2') 
+my36colors <-c('#E5D2DD', '#53A85F', '#F1BB72', '#F3B1A0', '#D6E7A3', '#57C3F3', '#476D87', '#E95C59', '#E59CC4', '#AB3282', '#23452F', '#BD956A', '#8C549C', '#585658', '#9FA3A8', '#E0D4CA', '#5F3D69', '#C5DEBA', '#58A4C3', '#E4C755', '#F7F398', '#AA9A59', '#E63863', '#E39A35', '#C1E6F3', '#6778AE', '#91D0BE', '#B53E2B', '#712820', '#DCC1DD', '#CCE0F5',  '#CCC9E6', '#625D9E', '#68A180', '#3A6963', '#968175')#颜色设置  
+VlnPlot(scRNA_harmony, features = markers,  
+        stacked=T,pt.size=0,  
+        cols = my36colors,  
+        direction = "horizontal", 
+        x.lab = '', y.lab = '')+
+  theme(axis.text.x = element_blank(),   
+      axis.ticks.x = element_blank())
+####Fig1.E-H
+cell.num <- table(Idents(scRNA_harmony))
+cell.freq <- round(prop.table(table(Idents(scRNA_harmony)))*100,2)
+cell.scRNA_harmony <- rbind(cell.num, cell.freq)
+cell.num.group <- table(Idents(scRNA_harmony), scRNA_harmony$Group) 
+colnames(cell.num.group) <- paste0(colnames(cell.num.group),'_cell_counts')
+cell.freq.group <- round(prop.table(table(Idents(scRNA_harmony), scRNA_harmony$Group), margin = 2) *100,2)
+colnames(cell.freq.group) <- paste0(colnames(cell.freq.group),'_cell_Freq')
+cell.group <- cbind(cell.num.group, cell.freq.group)
+####Fig1.I-J
+library(GSVA)
+library(limma)
+library(GSEABase)
+expFile="TCGA_CRC-TPM.txt"    
+gmtFile="CAF-Marker.gmt"     
+rt=read.table(expFile, header=T, sep="\t", check.names=F)
+rt=as.matrix(rt)
+rownames(rt)=rt[,1]
+exp=rt[,2:ncol(rt)]
+dimnames=list(rownames(exp),colnames(exp))
+mat=matrix(as.numeric(as.matrix(exp)),nrow=nrow(exp),dimnames=dimnames)
+mat=avereps(mat)
+mat=mat[rowMeans(mat)>0,]
+geneSet=getGmt(gmtFile, geneIdType=SymbolIdentifier())	
+ssgseaScore=gsva(mat, geneSet, method='ssgsea', kcdf='Gaussian', abs.ranking=TRUE)
+normalize=function(x){
+	return((x-min(x))/(max(x)-min(x)))}
+ssgseaOut=normalize(ssgseaScore)
+ssgseaOut=rbind(id=colnames(ssgseaOut),ssgseaOut)
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
