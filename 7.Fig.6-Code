@@ -1,0 +1,361 @@
+#####Screening prognostic genes in C1C2 differentially expressed genes
+library(limma)
+rt=read.table("TCGA_CRC-TPM.txt",sep="\t",header=T,check.names=F)
+rt=as.matrix(rt)
+rownames(rt)=rt[,1]
+exp=rt[,2:ncol(rt)]
+dimnames=list(rownames(exp),colnames(exp))
+data=matrix(as.numeric(as.matrix(exp)),nrow=nrow(exp),dimnames=dimnames)
+data=avereps(data)
+data=data[rowMeans(data)>0,]
+gene=read.table("C1C2-DiffGene.txt", header=F, check.names=F, sep="\t")
+sameGene=intersect(as.vector(gene[,1]),rownames(data))
+geneExp=data[sameGene,]
+out=rbind(ID=colnames(geneExp),geneExp)
+write.table(out,file="C1C2-DiffGene-exp.txt",sep="\t",quote=F,col.names=F)
+expFile="cogene-exp.txt"    
+cliFile="TCGA-CRC-Time.txt"    
+rt=read.table(expFile, header=T, sep="\t", check.names=F)
+rt=as.matrix(rt)
+rownames(rt)=rt[,1]
+exp=rt[,2:ncol(rt)]
+dimnames=list(rownames(exp),colnames(exp))
+data=matrix(as.numeric(as.matrix(exp)),nrow=nrow(exp),dimnames=dimnames)
+data=avereps(data)
+data=data[rowMeans(data)>0,]
+tcga=data
+group=sapply(strsplit(colnames(tcga),"\\-"), "[", 4)
+group=sapply(strsplit(group,""), "[", 1)
+group=gsub("2", "1", group)
+tcga=tcga[,group==0]
+tcga=t(tcga)
+rownames(tcga)=gsub("(.*?)\\-(.*?)\\-(.*?)\\-.*", "\\1\\-\\2\\-\\3", rownames(tcga))
+tcga=t(avereps(tcga))
+data=tcga
+data=t(data)
+cli=read.table(cliFile,sep="\t",check.names=F,header=T,row.names=1)     #读取临床文件
+sameSample=intersect(row.names(data),row.names(cli))
+data=data[sameSample,]
+cli=cli[sameSample,]
+out=cbind(cli,data)
+out=cbind(id=row.names(out),out)
+write.table(out,file="tcga.expTime.txt",sep="\t",row.names=F,quote=F)
+library(survival)             
+coxPfilter=0.05                  
+inputFile="tcga.expTime.txt"      
+rt=read.table(inputFile, header=T, sep="\t", check.names=F, row.names=1)    #读取输入文件
+rt$futime=rt$futime/365
+outTab=data.frame()
+sigGenes=c("futime","fustat")
+for(i in colnames(rt[,3:ncol(rt)])){
+	#cox分析
+	cox <- coxph(Surv(futime, fustat) ~ rt[,i], data = rt)
+	coxSummary = summary(cox)
+	coxP=coxSummary$coefficients[,"Pr(>|z|)"]
+	#保留预后相关的基因
+	if(coxP<coxPfilter){
+	    sigGenes=c(sigGenes,i)
+		outTab=rbind(outTab,
+			         cbind(id=i,
+			         HR=coxSummary$conf.int[,"exp(coef)"],
+			         HR.95L=coxSummary$conf.int[,"lower .95"],
+			         HR.95H=coxSummary$conf.int[,"upper .95"],
+			         pvalue=coxSummary$coefficients[,"Pr(>|z|)"])
+			        )
+	}
+}
+write.table(outTab,file="tcga.uniCox.txt",sep="\t",row.names=F,quote=F)
+
+#######Data standardization and batch removal
+library(limma)
+library(sva)
+tcgaExpFile="TCGA_CRC-TPM.txt"    
+geoExpFile="GSE17538-Exp.txt"     
+geneFile="Cox_Gene.txt"             
+rt=read.table(tcgaExpFile, header=T, sep="\t", check.names=F)
+rt=as.matrix(rt)
+rownames(rt)=rt[,1]
+exp=rt[,2:ncol(rt)]
+dimnames=list(rownames(exp),colnames(exp))
+tcga=matrix(as.numeric(as.matrix(exp)),nrow=nrow(exp),dimnames=dimnames)
+tcga=avereps(tcga)
+tcga=log2(tcga+1)
+group=sapply(strsplit(colnames(tcga),"\\-"), "[", 4)
+group=sapply(strsplit(group,""), "[", 1)
+group=gsub("2", "1", group)
+tcga=tcga[,group==0]
+tcga=t(tcga)
+rownames(tcga)=gsub("(.*?)\\-(.*?)\\-(.*?)\\-.*", "\\1\\-\\2\\-\\3", rownames(tcga))
+tcga=t(avereps(tcga))
+rt=read.table(geoExpFile, header=T, sep="\t", check.names=F)
+rt=as.matrix(rt)
+rownames(rt)=rt[,1]
+exp=rt[,2:ncol(rt)]
+dimnames=list(rownames(exp),colnames(exp))
+geo=matrix(as.numeric(as.matrix(exp)),nrow=nrow(exp),dimnames=dimnames)
+geo=avereps(geo)
+qx=as.numeric(quantile(geo, c(0, 0.25, 0.5, 0.75, 0.99, 1.0), na.rm=T))
+LogC=( (qx[5]>100) || ( (qx[6]-qx[1])>50 && qx[2]>0) )
+if(LogC){
+    geo[geo<0]=0
+    geo=log2(geo+1)}
+geo=normalizeBetweenArrays(geo)
+sameGene=intersect(row.names(tcga),row.names(geo))
+tcgaOut=tcga[sameGene,]
+geoOut=geo[sameGene,]
+all=cbind(tcgaOut,geoOut)
+batchType=c(rep(1,ncol(tcgaOut)),rep(2,ncol(geoOut)))
+outTab=ComBat(all, batchType, par.prior=TRUE)
+tcgaOut=outTab[,colnames(tcgaOut)]
+tcgaOut[tcgaOut<0]=0
+geoOut=outTab[,colnames(geoOut)]
+geoOut[geoOut<0]=0
+tcgaTab=rbind(ID=colnames(tcgaOut), tcgaOut)
+write.table(tcgaTab, file="TCGA.normalize.txt", sep="\t", quote=F, col.names=F)
+geoTab=rbind(ID=colnames(geoOut), geoOut)
+gene=read.table(geneFile, header=T, sep="\t", check.names=F)
+sameGene=intersect(as.vector(gene[,1]), rownames(tcgaOut))
+tcgaShareExp=tcgaOut[sameGene,]
+geoShareExp=geoOut[sameGene,]
+tcgaShareExp=rbind(ID=colnames(tcgaShareExp),tcgaShareExp)
+write.table(tcgaShareExp,file="TCGA.share.txt",sep="\t",quote=F,col.names=F)
+geoShareExp=rbind(ID=colnames(geoShareExp),geoShareExp)
+write.table(geoShareExp,file="GSE17538.share.txt",sep="\t",quote=F,col.names=F)
+
+#####Fig.6A-B
+if (!dir.exists(data.path)) dir.create(data.path)
+if (!dir.exists(res.path)) dir.create(res.path)
+if (!dir.exists(fig.path)) dir.create(fig.path)
+if (!dir.exists(code.path)) dir.create(code.path)
+library(openxlsx)
+library(seqinr)
+library(plyr)
+library(survival)
+library(randomForestSRC)
+library(glmnet)
+library(plsRcox)
+library(superpc)
+library(gbm)
+library(mixOmics)
+library(survcomp)
+library(CoxBoost)
+library(survivalsvm)
+library(BART)
+library(snowfall)
+library(ComplexHeatmap)
+library(RColorBrewer)
+work.path <- ""; setwd(work.path) 
+code.path <- file.path(work.path, "Codes")
+data.path <- file.path(work.path, "InputData")
+res.path <- file.path(work.path, "Results")
+fig.path <- file.path(work.path, "Figures")
+source(file.path(code.path, "ML.R"))
+Train_expr <- read.table(file.path(data.path, "Training_expr.txt"), header = T, sep = "\t", row.names = 1,check.names = F,stringsAsFactors = F)
+Train_expr <- Train_expr[rowSums(Train_expr > 0) > ncol(Train_expr) * 0.1, ] 
+Train_surv <- read.table(file.path(data.path, "Training_surv.txt"), header = T, sep = "\t", row.names = 1,check.names = F,stringsAsFactors = F)
+Train_surv <- Train_surv[Train_surv$OS.time > 0, c("OS", "OS.time")] 
+comsam <- intersect(rownames(Train_surv), colnames(Train_expr))
+Train_expr <- Train_expr[,comsam]; Train_surv <- Train_surv[comsam,,drop = F]
+Test_expr <- read.table(file.path(data.path, "Testing_expr.txt"), header = T, sep = "\t", row.names = 1,check.names = F,stringsAsFactors = F)
+Test_surv <- read.table(file.path(data.path, "Testing_surv.txt"), header = T, sep = "\t", row.names = 1,check.names = F,stringsAsFactors = F)
+Test_surv <- Test_surv[Test_surv$OS.time > 0, c("Coho","OS", "OS.time")] # 提取OS大于0的样本
+comsam <- intersect(rownames(Test_surv), colnames(Test_expr))
+Test_expr <- Test_expr[,comsam]; Test_surv <- Test_surv[comsam,,drop = F]
+GSE29621.share <- read.table(file.path(data.path, "GSE29621.share.txt"), header = T, sep = "\t", row.names = 1,check.names = F,stringsAsFactors = F)
+GSE29621_Time <- read.table(file.path(data.path, "GSE29621_Time.txt"), header = T, sep = "\t", row.names = 1,check.names = F,stringsAsFactors = F)
+GSE29621_Time <- GSE29621_Time[GSE29621_Time$OS.time > 0, c("Coho","OS", "OS.time")] # 提取OS大于0的样本
+comsam <- intersect(rownames(GSE29621_Time), colnames(GSE29621.share))
+GSE29621.share <- GSE29621.share[,comsam]; GSE29621_Time <- GSE29621_Time[comsam,,drop = F]
+GSE39582.share <- read.table(file.path(data.path, "GSE39582.share.txt"), header = T, sep = "\t", row.names = 1,check.names = F,stringsAsFactors = F)
+GSE39582_time <- read.table(file.path(data.path, "GSE39582_time.TXT"), header = T, sep = "\t", row.names = 1,check.names = F,stringsAsFactors = F)
+GSE39582_time <- GSE39582_time [GSE39582_time $OS.time > 0, c("Coho","OS", "OS.time")]
+comsam <- intersect(rownames(GSE39582_time ), colnames(GSE39582.share))
+GSE39582.share <- GSE39582.share[,comsam]; GSE39582_time <- GSE39582_time [comsam,,drop = F]
+GSE72970.share <- read.table(file.path(data.path, "GSE72970.share.txt"), header = T, sep = "\t", row.names = 1,check.names = F,stringsAsFactors = F)
+GSE72970_Time <- read.table(file.path(data.path, "GSE72970_Time.txt"), header = T, sep = "\t", row.names = 1,check.names = F,stringsAsFactors = F)
+GSE72970_Time <- GSE72970_Time[GSE72970_Time$OS.time > 0, c("Coho","OS", "OS.time")] 
+comsam <- intersect(rownames(GSE72970_Time), colnames(GSE72970.share))
+GSE72970.share <- GSE72970.share[,comsam]; GSE72970_Time <- GSE72970_Time[comsam,,drop = F]
+comgene <- intersect(rownames(Train_expr),rownames(GSE39582.share))   
+Train_expr <- t(Train_expr[comgene,])
+Test_expr <- t(Test_expr[comgene,]) 
+GSE29621.share<- t(GSE29621.share[comgene,]) 
+GSE39582.share <- t(GSE39582.share[comgene,])
+methods <- read.xlsx(file.path(code.path, "41467_2022_28421_MOESM4_ESM.xlsx"), startRow = 2)
+methods <- methods$Model
+methods <- gsub("-| ", "", methods)
+head(methods)
+## Train the model --------------------------------------------------------
+model <- list()
+set.seed(seed = 123)
+for (method in methods){
+  cat(match(method, methods), ":", method, "\n")
+  method_name = method 
+  method <- strsplit(method, "\\+")[[1]] 
+  Variable = colnames(Train_expr) 
+  for (i in 1:length(method)){
+    if (i < length(method)){
+      selected.var <- RunML(method = method[i], 
+                            Train_expr = Train_expr, 
+                            Train_surv = Train_surv, 
+                            mode = "Variable",                                   timeVar = "OS.time", statusVar = "OS")      if (length(selected.var) > 5) Variable <- intersect(Variable, selected.var)
+    } else {
+      model[[method_name]] <- RunML(method = method[i],
+                                    Train_expr = Train_expr[, Variable],
+                                    Train_surv = Train_surv,
+                                    mode = "Model",
+                                    timeVar = "OS.time", statusVar = "OS")
+    }
+  }
+}
+saveRDS(model, file.path(res.path, "model.rds"))
+model <- readRDS(file.path(res.path, "model.rds"))
+summary(Train_expr)
+summary(Test_expr)
+summary(GSE29621.share)
+summary(GSE39582.share)
+Train_expr <- scale(Train_expr)
+Test_expr <- scale(Test_expr)
+GSE29621.share <- scale(GSE29621.share)
+GSE39582.share <- scale(GSE39582.share)
+Cindexlist1 <- list()
+for (method in methods){
+  Cindexlist1[[method]] <- RunEval(fit = model[[method]], # 预后模型
+                                  Test_expr = Test_expr,
+                                  Test_surv = Test_surv, 
+                                  Train_expr = Train_expr, 
+                                  Train_surv = Train_surv, 
+                                  Train_name = "TCGA", 
+                                  cohortVar = "Coho", 
+                                  timeVar = "OS.time", 
+                                  statusVar = "OS") 
+}
+Cindex_mat1 <- do.call(rbind, Cindexlist1)
+write.table(Cindex_mat1, file.path(res.path, "Cindex_mat1.txt"),
+            sep = "\t", row.names = T, col.names = T, quote = F)
+Cindexlist2 <- list()
+for (method in methods){
+  Cindexlist2[[method]] <- RunEval(fit = model[[method]], 
+                                  Test_expr = GSE29621.share, 
+                                  Test_surv = GSE29621_Time,
+                                  Train_expr = Train_expr,
+                                  Train_surv = Train_surv,
+                                  Train_name = "TCGA",
+                                  cohortVar = "Coho",
+                                  timeVar = "OS.time", 
+                                  statusVar = "OS") 
+}
+Cindex_mat2 <- do.call(rbind, Cindexlist2)
+write.table(Cindex_mat2, file.path(res.path, "Cindex_mat2.txt"),
+            sep = "\t", row.names = T, col.names = T, quote = F)
+Cindexlist3 <- list()
+for (method in methods){
+  Cindexlist3[[method]] <- RunEval(fit = model[[method]], 
+                                  Test_expr = GSE39582.share, 
+                                  Test_surv = GSE39582_time, 
+                                  Train_expr = Train_expr, 
+                                  Train_surv = Train_surv, 
+                                  Train_name = "TCGA", 
+                                  cohortVar = "Coho", 
+                                  timeVar = "OS.time", 
+                                  statusVar = "OS") 
+}
+Cindex_mat3 <- do.call(rbind, Cindexlist3)
+write.table(Cindex_mat3, file.path(res.path, "Cindex_mat3.txt"),
+            sep = "\t", row.names = T, col.names = T, quote = F)
+Cindex_mat <- read.table(file.path(res.path, "Cindex_mat.txt"),sep = "\t", row.names = 1, header = T,check.names = F,stringsAsFactors = F)
+avg_Cindex <- apply(Cindex_mat, 1, mean)         
+avg_Cindex <- sort(avg_Cindex, decreasing = T)     
+Cindex_mat <- Cindex_mat[names(avg_Cindex), ]   
+
+avg_Cindex <- as.numeric(format(avg_Cindex, digits = 3, nsmall = 3)) 数
+row_ha = rowAnnotation(bar = anno_barplot(avg_Cindex, bar_width = 0.8, border = FALSE,
+                                          gp = gpar(fill = "steelblue", col = NA),
+                                          add_numbers = T, numbers_offset = unit(-10, "mm"),
+                                          axis_param = list("labels_rot" = 0),
+                                          numbers_gp = gpar(fontsize = 9, col = "white"),
+                                          width = unit(3, "cm")),
+                       show_annotation_name = F)
+CohortCol <- c("steelblue", "firebrick","DeepSkyBlue","LightSteelBlue") 
+names(CohortCol) <- colnames(Cindex_mat)
+col_ha = columnAnnotation("Cohort" = colnames(Cindex_mat),
+                          col = list("Cohort" = CohortCol),
+                          show_annotation_name = F)
+cellwidth = 1
+cellheight = 0.5
+hm <- Heatmap(as.matrix(Cindex_mat), name = "C-index",
+              right_annotation = row_ha, 
+              top_annotation = col_ha,
+              # col = c("#1CB8B2", "#FFFFFF", "#EEB849"), 
+              col = c("#4195C1", "#FFFFFF", "#CB5746"),
+              rect_gp = gpar(col = "black", lwd = 1),
+              cluster_columns = FALSE, cluster_rows = FALSE, 
+              show_column_names = FALSE, 
+              show_row_names = TRUE,
+              row_names_side = "left",
+              width = unit(cellwidth * ncol(Cindex_mat) + 2, "cm"),
+              height = unit(cellheight * nrow(Cindex_mat), "cm"),
+              column_split = factor(colnames(Cindex_mat), levels = colnames(Cindex_mat)), 
+              column_title = NULL,
+              cell_fun = function(j, i, x, y, w, h, col) { # add text to each grid
+                grid.text(label = format(Cindex_mat[i, j], digits = 3, nsmall = 3),
+                          x, y, gp = gpar(fontsize = 10))
+              }
+)
+pdf(file.path(fig.path, "Cindex2.pdf"), width = (cellwidth * ncol(Cindex_mat) + 3) * 2, height = cellheight * nrow(Cindex_mat) * 0.45)
+draw(hm)
+invisible(dev.off())
+
+#####Fig.6C-D
+library("glmnet")
+library("survival")
+coxSigFile="TCGA-exTime.txt"  
+rt=read.table(coxSigFile, header=T, sep="\t", check.names=F, row.names=1)
+geoFile="GSE17538-exTime.txt"
+geo=read.table(geoFile, header=T, sep="\t", check.names=F, row.names=1)
+sameGene=intersect(colnames(rt)[3:ncol(rt)], colnames(geo)[3:ncol(geo)])
+rt=rt[,c("futime","fustat",sameGene)]
+rt$futime[rt$futime<=0]=0.003
+rt$futime=rt$futime/365
+Coeff="Gene_Coeffs.txt"
+Coeff=read.table(Coeff, header=T, sep="\t", check.names=F, row.names=1)
+trainFinalGeneExp=rt[,row.names(Coeff)]
+myFun=function(x){crossprod(as.numeric(x),Coeff$Coe)}
+trainScore=apply(trainFinalGeneExp,1,myFun)
+outCol=c("futime","fustat",row.names(Coeff))
+risk=as.vector(ifelse(trainScore>median(trainScore),"high","low"))
+outTab=cbind(rt[,outCol],riskScore=as.vector(trainScore),risk)
+write.table(cbind(id=rownames(outTab),outTab),file="TCGARisk.txt",sep="\t",quote=F,row.names=F)
+geoFile="GSE17538-exTime.txt" 
+rt=read.table(geoFile, header=T, sep="\t", check.names=F, row.names=1)
+rt$futime=rt$futime/365
+testFinalGeneExp=rt[,row.names(Coeff)]
+testScore=apply(testFinalGeneExp,1,myFun)
+outCol=c("futime","fustat",row.names(Coeff))
+risk=as.vector(ifelse(testScore>median(trainScore),"high","low"))
+outTab=cbind(rt[,outCol],riskScore=as.vector(testScore),risk)
+write.table(cbind(id=rownames(outTab),outTab),file="GSE17538Risk.txt",sep="\t",quote=F,row.names=F)
+geoFile="GSE39582-exTime.txt" 
+rt=read.table(geoFile, header=T, sep="\t", check.names=F, row.names=1)
+rt$futime=rt$futime/365
+testFinalGeneExp=rt[,row.names(Coeff)]
+testScore=apply(testFinalGeneExp,1,myFun)
+outCol=c("futime","fustat",row.names(Coeff))
+risk=as.vector(ifelse(testScore>median(trainScore),"high","low"))
+outTab=cbind(rt[,outCol],riskScore=as.vector(testScore),risk)
+write.table(cbind(id=rownames(outTab),outTab),file="GSE39582Risk.txt",sep="\t",quote=F,row.names=F)
+geoFile="GSE29621-exTime.txt" 
+rt=read.table(geoFile, header=T, sep="\t", check.names=F, row.names=1)
+rt$futime=rt$futime/365
+testFinalGeneExp=rt[,row.names(Coeff)]
+testScore=apply(testFinalGeneExp,1,myFun)
+outCol=c("futime","fustat",row.names(Coeff))
+risk=as.vector(ifelse(testScore>median(trainScore),"high","low"))
+outTab=cbind(rt[,outCol],riskScore=as.vector(testScore),risk)
+write.table(cbind(id=rownames(outTab),outTab),file="GSE29621Risk.txt",sep="\t",quote=F,row.names=F)
+
+
+
+
+
+
