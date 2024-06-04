@@ -1,0 +1,88 @@
+####Fig.9A
+library(Seurat)
+library(ggplot2)
+library(GSEABase)
+library(tidyverse)
+library(patchwork)
+library(viridis)
+library(Seurat)
+library(scCustomize)
+library(tidyverse)
+library(pheatmap)
+library(clusterProfiler)
+Risk.Score <- openxlsx::read.xlsx("Geneset/Risk.Gene.xlsx")
+Risk.Score <-as.list(Risk.Score)
+exp<- as.matrix(Macrophage@assays[["RNA"]]@counts)
+matrix = gsva(exp, 
+              Risk.Score, 
+              kcdf="Poisson",
+              method="ssgsea", 
+              abs.ranking=T ,parallel.sz=3)
+scRNA_harmony$Risk.Score=matrix[1,]
+plot_density(scRNA_harmony, "Risk.Score", pal = "magma")
+FeatureStatPlot(
+  srt = Fibroblasts, group.by = "celltype", bg.by = "celltype",
+  stat.by = c("Risk.Score"), add_box = TRUE
+  )
+
+####Fig.9B
+library(GSVA)
+library(limma)
+library(GSEABase)
+expFile="TCGA_CRC-TPM.txt"    
+gmtFile="CAF-Marker.gmt"     
+rt=read.table(expFile, header=T, sep="\t", check.names=F)
+rt=as.matrix(rt)
+rownames(rt)=rt[,1]
+exp=rt[,2:ncol(rt)]
+dimnames=list(rownames(exp),colnames(exp))
+mat=matrix(as.numeric(as.matrix(exp)),nrow=nrow(exp),dimnames=dimnames)
+mat=avereps(mat)
+mat=mat[rowMeans(mat)>0,]
+geneSet=getGmt(gmtFile, geneIdType=SymbolIdentifier())	
+ssgseaScore=gsva(mat, geneSet, method='ssgsea', kcdf='Gaussian', abs.ranking=TRUE)
+normalize=function(x){
+	return((x-min(x))/(max(x)-min(x)))}
+ssgseaOut=normalize(ssgseaScore)
+ssgseaOut=rbind(id=colnames(ssgseaOut),ssgseaOut)
+
+####Fig.9C
+library(Seurat)
+library(ggplot2)
+library(patchwork)
+library(dplyr)
+library(hdf5r)
+CRC<-Load10X_Spatial(" ")
+VlnPlot(CRC, features = "nCount_Spatial", pt.size = 0.1) + NoLegend()
+SpatialFeaturePlot(CRC, features = "nCount_Spatial") + theme(legend.position = "right")
+wrap_plots(plot1, plot2)
+plot1 <- VlnPlot(CRC, features = "nFeature_Spatial", pt.size = 0.1) + NoLegend()
+plot2 <- SpatialFeaturePlot(CRC, features = "nFeature_Spatial") + theme(legend.position = "right")
+wrap_plots(plot1, plot2)
+CRC <- SCTransform(CRC, assay = "Spatial", verbose = FALSE)
+SpatialFeaturePlot(CRC, features = c("TFF1", "TM4SF1"))
+CRC <- RunPCA(CRC, assay = "SCT", verbose = FALSE)
+CRC <- FindNeighbors(CRC, reduction = "pca", dims = 1:30)
+CRC <- FindClusters(CRC, verbose = FALSE)
+CRC <- RunUMAP(CRC, reduction = "pca", dims = 1:30)
+DimPlot(CRC, reduction = "umap", label = TRUE)
+ SpatialDimPlot(CRC, label = TRUE, label.size = 3)
+de_markers <- FindMarkers(CRC, ident.1 = 5, ident.2 = 6)
+SpatialFeaturePlot(object = CRC, features = rownames(de_markers)[1:3], alpha = c(0.1, 1), ncol = 3)
+library(Seurat)
+library(GSVA)
+library(tidyverse)
+library(pheatmap)
+library(clusterProfiler)
+Risk.Score <- openxlsx::read.xlsx("Geneset/Risk.Gene.xlsx")
+Risk.Score <-as.list(Risk.Score)
+exp<- as.matrix(CRC@assays$SCT@counts)
+matrix = gsva(exp, 
+              Risk.Score, 
+              kcdf="Poisson",
+              method="ssgsea", 
+              abs.ranking=T ,parallel.sz=3)
+CRC$Risk.Score=matrix[1,]
+SpatialFeaturePlot(CRC,features = 'Risk.Score')
+
+
